@@ -9,7 +9,7 @@ pipeline {
   environment {
     APP_DIR       = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app'
     MANIFEST_FILE = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml'
-    DOCKER_IMAGE  = "<your-dockerhub-username>/ultimate-cicd:${BUILD_NUMBER}"
+    DOCKER_IMAGE  = "prasandev/ultimate-cicd:${BUILD_NUMBER}"
     SONAR_URL     = 'http://<sonarqube-ip>:9000'
     GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
     GIT_USER_NAME = 'prasna-ops'
