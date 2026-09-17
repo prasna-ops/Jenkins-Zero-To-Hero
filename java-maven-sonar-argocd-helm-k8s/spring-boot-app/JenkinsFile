@@ -1,7 +1,8 @@
 pipeline {
   agent {
     docker {
-      image 'abhishekf5/maven-abhishek-docker-agent:v1'
+      // Custom agent: Java 17 + Maven + Docker CLI (built once on the Jenkins server)
+      image 'maven-docker-agent:17'
       args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
     }
   }
@@ -9,8 +10,13 @@ pipeline {
   environment {
     APP_DIR       = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app'
     MANIFEST_FILE = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml'
+
+    DOCKER_USER   = 'prasandev'
     DOCKER_IMAGE  = "prasandev/ultimate-cicd:${BUILD_NUMBER}"
+
+    // Jenkins and SonarQube are on the same EC2 instance -> use the private IP
     SONAR_URL     = 'http://172.31.5.83:9000'
+
     GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
     GIT_USER_NAME = 'prasna-ops'
   }
@@ -20,6 +26,7 @@ pipeline {
       steps {
         // Code is already checked out by "Pipeline script from SCM"
         sh 'git config --global --add safe.directory "*"'
+        sh 'java -version && mvn -version && docker --version'
         sh 'ls -ltr'
       }
     }
@@ -31,20 +38,31 @@ pipeline {
     }
 
     stage('Static Code Analysis') {
-  steps {
-    withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
-      sh 'cd $APP_DIR && mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.token=$SONAR_AUTH_TOKEN -Dsonar.host.url=$SONAR_URL'
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
+          sh '''
+            cd $APP_DIR
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+              -Dsonar.token=$SONAR_AUTH_TOKEN \
+              -Dsonar.host.url=$SONAR_URL
+          '''
+        }
+      }
     }
-  }
-}
 
     stage('Build and Push Docker Image') {
       steps {
-        script {
-          sh 'cd $APP_DIR && docker build -t $DOCKER_IMAGE .'
-          docker.withRegistry('https://index.docker.io/v1/', 'docker-cred') {
-            docker.image(env.DOCKER_IMAGE).push()
-          }
+        withCredentials([usernamePassword(credentialsId: 'docker-cred',
+                                          usernameVariable: 'DOCKER_LOGIN_USER',
+                                          passwordVariable: 'DOCKER_LOGIN_PASS')]) {
+          sh '''
+            cd $APP_DIR
+            docker build -t $DOCKER_IMAGE .
+            echo "$DOCKER_LOGIN_PASS" | docker login -u "$DOCKER_LOGIN_USER" --password-stdin
+            docker push $DOCKER_IMAGE
+            docker logout
+            docker rmi $DOCKER_IMAGE || true   # free disk space on the small EC2 volume
+          '''
         }
       }
     }
@@ -53,15 +71,23 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
           sh '''
-            git config user.email "prasanguptacode7@gmail.com"
+            git config user.email "prasandev@users.noreply.github.com"
             git config user.name  "Prasan Gupta"
-            sed -i -E "s|(image: .*/ultimate-cicd:).*|\\1${BUILD_NUMBER}|" $MANIFEST_FILE
+            sed -i -E "s|(image: ).*/ultimate-cicd:.*|\\1${DOCKER_USER}/ultimate-cicd:${BUILD_NUMBER}|" $MANIFEST_FILE
+            cat $MANIFEST_FILE | grep image:
             git add $MANIFEST_FILE
             git commit -m "Update deployment image to version ${BUILD_NUMBER} [skip ci]" || echo "No changes to commit"
             git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
           '''
         }
       }
+    }
+  }
+
+  post {
+    always {
+      // Clean workspace to save disk space (files are root-owned from the container)
+      sh 'rm -rf "$WORKSPACE"/* || true'
     }
   }
 }
